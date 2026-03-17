@@ -1,0 +1,137 @@
+#include "imu.h"
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+/* --- The State Machine Steps --- */
+enum {PENDING_SYNC = 0, CONFIRMING_SYNC, IN_SYNC};
+
+/* --- Hidden Internal State --- */
+static UART_HandleTypeDef *imu_uart;
+static UART_HandleTypeDef *print_uart;
+
+static uint8_t sync_state = PENDING_SYNC;
+static uint8_t rx_byte;
+static uint8_t uart_buff[13]; /* Holds the 13-byte data chunk */
+static uint8_t data_ready = 0;
+
+static char sending_buff[100];
+
+/* --- Hidden Math Variables --- */
+static float readings[32] = {0};
+static int start = 0, first_reading = 1;
+static float prev_yaw = 0.0f, sum_yaw = 0.0f;
+static IMU_Data_t final_data = {0};
+
+/* --- Turn it on --- */
+void IMU_Init(UART_HandleTypeDef *sensor_uart, UART_HandleTypeDef *pc_uart) {
+    imu_uart = sensor_uart;
+    print_uart = pc_uart;
+
+    sync_state = PENDING_SYNC;
+    data_ready = 0;
+
+    /* Start listening for the very first 0xAA byte */
+    HAL_UART_Receive_IT(imu_uart, &rx_byte, 1);
+}
+
+/* --- Process the Math (Called in while loop) --- */
+uint8_t IMU_Update(IMU_Data_t *data_out) {
+    if (!data_ready) return 0;
+
+    /* 1. Extract Raw Data from the 13-byte chunk */
+    /* uart_buff[1] and [2] are Yaw, [3] and [4] are Gyro Rate, etc. */
+    int16_t raw_yaw  = (int16_t)(uart_buff[1] | (uart_buff[2] << 8));
+    int16_t raw_rate = (int16_t)(uart_buff[3] | (uart_buff[4] << 8));
+    int16_t raw_Ax   = (int16_t)(uart_buff[5] | (uart_buff[6] << 8));
+    int16_t raw_Ay   = (int16_t)(uart_buff[7] | (uart_buff[8] << 8));
+    int16_t raw_Az   = (int16_t)(uart_buff[9] | (uart_buff[10] << 8));
+
+    /* 2. Calculate Pitch & Roll */
+    final_data.roll  = (float)(atan2f(raw_Ax, sqrtf(raw_Ay*raw_Ay + raw_Az*raw_Az))) * (180.0f / M_PI);
+    final_data.pitch = (float)(atan2f(raw_Ay, sqrtf(raw_Ax*raw_Ax + raw_Az*raw_Az))) * (180.0f / M_PI);
+
+    /* 3. Adaptive Yaw Filter */
+    float yaw_val = (raw_yaw / 100.0f) + 180.0f; /* Original driver scaling */
+
+    readings[start++] = yaw_val;
+    if (start >= 32) start = 0;
+
+    int current_filter_len = (abs(raw_rate) > 1500) ? 3 : 32 - ((abs(raw_rate) * 29) / 1500);
+    if (current_filter_len < 3) current_filter_len = 3;
+
+    float sum = 0;
+    int read_idx = start - 1;
+    for (int i = 0; i < current_filter_len; i++) {
+        if (read_idx < 0) read_idx = 32 - 1;
+        sum += readings[read_idx--];
+    }
+    final_data.yaw = sum / current_filter_len;
+
+    /* 4. Calculate Turns */
+//    if (first_reading) { prev_yaw = yaw_val; first_reading = 0; }
+//    float ang_change = yaw_val - prev_yaw;
+//    if (ang_change < -180.0f) ang_change += 360.0f;
+//    else if (ang_change > 180.0f) ang_change -= 360.0f;
+//    prev_yaw = yaw_val;
+//    sum_yaw += ang_change;
+//    final_data.turns = (int)(sum_yaw / 360.0f);
+
+    /* 5. Pass data to user and reset flags */
+    *data_out = final_data;
+    data_ready = 0;
+
+    return 1;
+}
+
+/* --- Your 1-Line Print Function --- */
+void IMU_PrintValues(void) {
+    if (print_uart == NULL) return;
+
+    int len = sprintf(sending_buff, "Turns:%d | Yaw:%.2f | Roll:%.1f | Pitch:%.1f\r\n",
+                      final_data.turns, final_data.yaw, final_data.roll, final_data.pitch);
+
+    HAL_UART_Transmit(print_uart, (uint8_t*)sending_buff, len, 100);
+}
+
+/* --- The State Machine Interrupt Listener --- */
+void IMU_UART_RxCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == imu_uart->Instance) {
+
+        switch(sync_state) {
+            case PENDING_SYNC:
+                if(rx_byte == 0xAA) sync_state = CONFIRMING_SYNC;
+                HAL_UART_Receive_IT(imu_uart, &rx_byte, 1);
+                break;
+
+            case CONFIRMING_SYNC:
+                if(rx_byte == 0x00) {
+                    sync_state = IN_SYNC;
+                    /* SYNC CONFIRMED! Grab the next 13 bytes all at once! */
+                    HAL_UART_Receive_IT(imu_uart, uart_buff, 13);
+                } else {
+                    sync_state = PENDING_SYNC;
+                    HAL_UART_Receive_IT(imu_uart, &rx_byte, 1);
+                }
+                break;
+
+            case IN_SYNC:
+            {
+                uint8_t checksum = 0;
+                /* Add up the first 12 bytes of the chunk */
+                for(int i = 0; i < 12; i++) checksum += uart_buff[i];
+
+                /* If checksum matches the 13th byte, alert the Update function! */
+                if(checksum == uart_buff[12]) {
+                    data_ready = 1;
+                }
+
+                /* Go back to looking for the next packet */
+                sync_state = PENDING_SYNC;
+                HAL_UART_Receive_IT(imu_uart, &rx_byte, 1);
+                break;
+            }
+        }
+    }
+}
