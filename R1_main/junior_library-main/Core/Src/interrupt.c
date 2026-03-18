@@ -187,11 +187,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 
 //Callback for I2C RXBuffer
-void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
-{
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+	PSx_SlaveHandler(&ps4);
+}
 
-	PSxConnectDMA(&ps4);
-
+void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+	PSx_MasterHandler(&ps4);
 }
 
 
@@ -204,17 +205,14 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
  * Function Return		: None
  * Function Example		: None
  */
-void I2C1_ER_IRQHandler(void){
-
-	HAL_DMA_DeInit(&hi2c1_rx_dma);
-	HAL_I2C_DeInit(&hi2c1);
-
-	I2CX_DMA_RX_Init(&hi2c1, &hi2c1_rx_dma, main_board_1, CLOCK_SPEED_400KHz);
-
+void I2C1_ER_IRQHandler(void) {
+	if (ps4.master) {
+    	HAL_DMA_DeInit(&hi2c1_rx_dma);
+    	HAL_I2C_DeInit(&hi2c1);
+    	I2CX_DMA_RX_Init(&hi2c1, &hi2c1_rx_dma, main_board_1, CLOCK_SPEED_400KHz);
+    	ps4.disconnected = 1;
+	}
 	HAL_I2C_ER_IRQHandler(&hi2c1);
-
-	PSxInitDMA(&ps4, &hi2c1);
-
 }
 
 

@@ -7,12 +7,169 @@
  * @brief  The application entry point.
  * @retval int
  */
+
+//HANDLES
+osThreadId_t heartBeatHandle;
+osThreadId_t movementHandle;
+osThreadId_t servoHandle;
+osThreadId_t pneumaticsHandle;
+
+//SEMAPHORES & MUTEXES
+
+//ATTRIBUTE DEFINITIONS
+const osThreadAttr_t heartBeatTaskAttributes = {
+		.name = "heartBeatTask",
+		.stack_size = 512,
+		.priority = (osPriority_t) osPriorityIdle,
+};
+
+const osThreadAttr_t movementTaskAttributes = {
+		.name = "movementTask",
+		.stack_size = 1024 * 4,
+		.priority = (osPriority_t) osPriorityNormal,
+};
+
+const osThreadAttr_t servoTaskAttributes = {
+		.name = "servoTask",
+		.stack_size = 1024,
+		.priority = (osPriority_t) osPriorityNormal,
+};
+
+const osThreadAttr_t pneumaticsTaskAttributes = {
+		.name = "pneumaticsTask",
+		.stack_size = 1024,
+		.priority = (osPriority_t) osPriorityNormal,
+};
+
+//GLOBAL VARIABLES
+
+///MOVEMENT VARIABLES
+float FL, FR, BL, BR;
+float speedCap;
+
+///SERVO VARIABLES
+SERVO_t serv1, serv2, serv3, serv4;
+volatile uint8_t servoControlActive = 0;
+
+///PNEUMATICS VARIABLES
+uint8_t pneumaticsToggle = 0;
+
+//FUNCTION PROTOTYPES
+void botInit(void);
+void analogueMovement(void);
+
+//TASK PROTOTYPES
+void HeartBeat(void *argument);
+void MovementTask(void *argument);
+void servoTask(void *argument);
+void pneumaticsTask(void *arguement);
+
+//FUNCTION DEFINITIONS
+void botInit(void) {
+	PSxSlaveInit(&ps4, &hi2c1);
+
+	ServoxInit(&serv1, &htim3, TIM3_CHANNEL4_PIN, TIM_CHANNEL_4);
+	ServoxInit(&serv2, &htim3, TIM3_CHANNEL3_PIN, TIM_CHANNEL_3);
+	ServoxInit(&serv3, &htim9, TIM9_CHANNEL1_PIN, TIM_CHANNEL_1);
+	ServoxInit(&serv4, &htim9, TIM9_CHANNEL2_PIN, TIM_CHANNEL_2);
+}
+
+//Processes user data for movement
+//NOTE: STILL HAVE NOT IMPLEMENTED IMU LOCK OR PERSPECTIVE CONTROL
+void analogueMovement(void) {
+	float tempFL, tempFR, tempBL, tempBR;
+	float y = ps4.joyL_y, rot_y = 0.0;
+	float x = ps4.joyL_x, rot_x = 0.0;
+	float w = 0.0;
+	float deadzone = 0.1;
+
+	if (fabs(x) < deadzone) x = 0.0;
+	if (fabs(y) < deadzone) y = 0.0;
+
+	tempFL = -x + y + w;
+	tempFR =  x + y - w;
+	tempBL =  x + y + w;
+	tempBR = -x + y - w;
+
+	float currentMax = fabs(tempFL);
+	if (fabs(tempFR) > currentMax) currentMax = fabs(tempFR);
+	if (fabs(tempBL) > currentMax) currentMax = fabs(tempBL);
+	if (fabs(tempBR) > currentMax) currentMax = fabs(tempBR);
+
+	float scale = (currentMax > 1.0f) ? (speedCap / currentMax) : speedCap;
+
+	if (x == 0.0 && y == 0.0 && fabs(ps4.joyR_x) <= deadzone && fabs(w) < 0.05) {
+			FL = FR = BL = BR = 0;
+	} else {
+		FL = tempFL * scale;
+		FR = tempFR * scale;
+		BL = tempBL * scale;
+		BR = tempBR * scale;
+	}
+}
+
+//TASK DEFINITIONS
+void HeartBeat(void *argument) {
+	for (;;) {
+		led2 = !led2;
+		osDelay(250);
+	}
+}
+
+void MovementTask(void *argument) {
+
+}
+
+void servoTask(void *argument) {
+	for (;;) {
+		float stick = ps4.joyL_x;
+		float ang = 500 + (stick + 1)*1000;
+		if (ps4.button & R1) {
+			servoControlActive = 1;
+			ServoSetPulse(&serv1, ang);
+		} else if (ps4.button & L1) {
+			servoControlActive = 1;
+			ServoSetPulse(&serv2, ang);
+		} else if (ps4.an_R2 > 0) {
+			servoControlActive = 1;
+			ServoSetPulse(&serv3, ang);
+		} else if (ps4.an_L2 > 0) {
+			servoControlActive = 1;
+			ServoSetPulse(&serv4, ang);
+		} else {
+			servoControlActive = 0;
+		}
+		osDelay(20);
+	}
+}
+
+void pneumaticsTask(void *arguement) {
+	for (;;) {
+		if ((ps4.button & CIRCLE) && !pneumaticsToggle) {
+			pneumaticsToggle = 1;
+//			HAL_GPIO_TogglePin(IP8_PIN);
+		} else if (!(ps4.button & CIRCLE) && pneumaticsToggle) {
+			pneumaticsToggle = 0;
+		}
+		osDelay(20);
+	}
+}
+
 int main(void)
 {
 	set();
-	while(1){
+	botInit();
+	osKernelInitialize();
 
-	}
+	//THREAD CREATION
+	heartBeatHandle = osThreadNew(HeartBeat, NULL, &heartBeatTaskAttributes);
+	movementHandle = osThreadNew(MovementTask, NULL, &movementTaskAttributes);
+	servoHandle = osThreadNew(servoTask, NULL, &servoTaskAttributes);
+	pneumaticsHandle = osThreadNew(pneumaticsTask, NULL, &pneumaticsTaskAttributes);
+
+	osKernelStart();
+
+	while(1);
 
 }
 
