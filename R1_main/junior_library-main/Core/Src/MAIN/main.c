@@ -43,9 +43,10 @@ const osThreadAttr_t pneumaticsTaskAttributes = {
 
 //GLOBAL VARIABLES
 
-///MOVEMENT VARIABLES
+///COMMON MOVEMENT & ANGLE VARIABLES
 float FL, FR, BL, BR;
 float speedCap;
+volatile float currentHeading = 0, targetHeading = 0;
 
 ///SERVO VARIABLES
 SERVO_t serv1, serv2, serv3, serv4;
@@ -54,9 +55,15 @@ volatile uint8_t servoControlActive = 0;
 ///PNEUMATICS VARIABLES
 uint8_t pneumaticsToggle = 0;
 
+///PERSPECTIVE CONTROL VARIABLES
+volatile float referenceHeading = 0.0;
+uint8_t perspectiveControlMode = 0;
+uint8_t perspectiveControlToggle = 0;
+
 //FUNCTION PROTOTYPES
 void botInit(void);
 void analogueMovement(void);
+void perspectiveControlProcess(float* x, float* y);
 
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
@@ -72,10 +79,15 @@ void botInit(void) {
 	ServoxInit(&serv2, &htim3, TIM3_CHANNEL3_PIN, TIM_CHANNEL_3);
 	ServoxInit(&serv3, &htim9, TIM9_CHANNEL1_PIN, TIM_CHANNEL_1);
 	ServoxInit(&serv4, &htim9, TIM9_CHANNEL2_PIN, TIM_CHANNEL_2);
+
+	RNSEnquire(RNS_X_Y_IMU_LSA, &rns);
+	targetHeading = rns.enq.enq_buffer[0].data;
+	currentHeading = rns.enq.enq_buffer[0].data;
+	referenceHeading = rns.enq.enq_buffer[0].data;
 }
 
 //Processes user data for movement
-//NOTE: STILL HAVE NOT IMPLEMENTED IMU LOCK OR PERSPECTIVE CONTROL
+//NOTE: STILL HAVE NOT IMPLEMENTED IMU LOCK
 void analogueMovement(void) {
 	float tempFL, tempFR, tempBL, tempBR;
 	float y = ps4.joyL_y, rot_y = 0.0;
@@ -85,6 +97,8 @@ void analogueMovement(void) {
 
 	if (fabs(x) < deadzone) x = 0.0;
 	if (fabs(y) < deadzone) y = 0.0;
+
+	if (perspectiveControlMode) perspectiveControlProcess(&x, &y);
 
 	tempFL = -x + y + w;
 	tempFR =  x + y - w;
@@ -108,6 +122,20 @@ void analogueMovement(void) {
 	}
 }
 
+void perspectiveControlProcess(float* x, float* y) {
+	float referenceAngle = currentHeading - referenceHeading;
+	if (referenceAngle > 180) referenceAngle -= 360;
+	if (referenceAngle < -180) referenceAngle += 360;
+
+	referenceAngle = referenceAngle * (M_PI / 180.0f);
+
+	float rot_x = (*x * cosf(referenceAngle)) + (*y * sinf(referenceAngle));
+	float rot_y = (*x * -1 * sinf(referenceAngle)) + (*y * cosf(referenceAngle));
+
+	*x = rot_x;
+	*y = rot_y;
+}
+
 //TASK DEFINITIONS
 void HeartBeat(void *argument) {
 	for (;;) {
@@ -117,7 +145,7 @@ void HeartBeat(void *argument) {
 }
 
 void MovementTask(void *argument) {
-
+//still haven't fully incorporated any of the movement mechanics
 }
 
 void servoTask(void *argument) {
