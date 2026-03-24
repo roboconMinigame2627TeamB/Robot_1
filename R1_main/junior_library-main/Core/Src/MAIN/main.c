@@ -7,14 +7,20 @@
  * @brief  The application entry point.
  * @retval int
  */
+//DEFINITIONS
+#define PNEUMATICVALVE1 IP8_PIN //to be changed later
+#define PNEUMATICVALVE2 IP9_PIN //to be changed later
 
 //HANDLES
 osThreadId_t heartBeatHandle;
 osThreadId_t movementHandle;
 osThreadId_t servoHandle;
 osThreadId_t pneumaticsHandle;
+osThreadId_t IMUHandle;
 
 //SEMAPHORES & MUTEXES
+osSemaphoreId_t IMUSempahore;
+osMutexId_t IMUDataMutex;
 
 //ATTRIBUTE DEFINITIONS
 const osThreadAttr_t heartBeatTaskAttributes = {
@@ -41,6 +47,20 @@ const osThreadAttr_t pneumaticsTaskAttributes = {
 		.priority = (osPriority_t) osPriorityNormal,
 };
 
+const osThreadAttr_t IMUTaskAttributes = {
+		.name = "IMUTask",
+		.stack_size = 1024 * 4,
+		.priority = (osPriority_t) osPriorityAboveNormal,
+};
+
+const osSemaphoreAttr_t IMUSemAttributes = {
+		.name = "IMUSem"
+};
+
+const osMutexAttr_t IMUDataSemAttributes = {
+		.name = "IMUDataMux"
+};
+
 //GLOBAL VARIABLES
 
 ///COMMON MOVEMENT & ANGLE VARIABLES
@@ -60,16 +80,27 @@ volatile float referenceHeading = 0.0;
 uint8_t perspectiveControlMode = 0;
 uint8_t perspectiveControlToggle = 0;
 
+//IMU LOCK VARIABLES
+PID_t IMULock;
+float wPID = 0.0, error = 0.0;
+float kp = 1.0, ki = 0.0, kd = 0.0;
+uint8_t IMULockMode = 0;
+uint8_t IMULockToggle = 0;
+volatile uint8_t IMUDataReady = 0;
+
 //FUNCTION PROTOTYPES
 void botInit(void);
 void analogueMovement(void);
 void perspectiveControlProcess(float* x, float* y);
+void IMUPIDProcessing(void);
+void IMULockProcessing(float* w, float deadzone);
 
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
 void MovementTask(void *argument);
 void servoTask(void *argument);
 void pneumaticsTask(void *arguement);
+void IMUTask(void *argument);
 
 //FUNCTION DEFINITIONS
 void botInit(void) {
@@ -90,14 +121,15 @@ void botInit(void) {
 //NOTE: STILL HAVE NOT IMPLEMENTED IMU LOCK
 void analogueMovement(void) {
 	float tempFL, tempFR, tempBL, tempBR;
-	float y = ps4.joyL_y, rot_y = 0.0;
-	float x = ps4.joyL_x, rot_x = 0.0;
+	float y = ps4.joyL_y;
+	float x = ps4.joyL_x;
 	float w = 0.0;
 	float deadzone = 0.1;
 
 	if (fabs(x) < deadzone) x = 0.0;
 	if (fabs(y) < deadzone) y = 0.0;
 
+	if (IMULockMode) IMULockProcessing(&w, deadzone);
 	if (perspectiveControlMode) perspectiveControlProcess(&x, &y);
 
 	tempFL = -x + y + w;
@@ -134,6 +166,25 @@ void perspectiveControlProcess(float* x, float* y) {
 
 	*x = rot_x;
 	*y = rot_y;
+}
+
+void IMUPIDProcessing(void) {
+	float tempError = 0;
+	RNSEnquire(RNS_X_Y_IMU_LSA, &rns);
+	currentHeading = rns.enq.enq_buffer[0].data;
+	tempError = targetHeading - currentHeading;
+	if (tempError > 180) tempError -= 360;
+	if (tempError < -180) tempError += 360;
+	error = tempError;
+}
+
+void IMULockProcessing(float* w, float deadzone) {
+	if (fabs(ps4.joyR_x) < deadzone) {
+		*w = wPID;
+	} else {
+		*w = ps4.joyR_x;
+		targetHeading = currentHeading;
+	}
 }
 
 //TASK DEFINITIONS
@@ -175,11 +226,23 @@ void pneumaticsTask(void *arguement) {
 	for (;;) {
 		if ((ps4.button & CIRCLE) && !pneumaticsToggle) {
 			pneumaticsToggle = 1;
-//			HAL_GPIO_TogglePin(IP8_PIN);
+			HAL_GPIO_TogglePin(PNEUMATICVALVE1);
+			HAL_GPIO_TogglePin(PNEUMATICVALVE2);
 		} else if (!(ps4.button & CIRCLE) && pneumaticsToggle) {
 			pneumaticsToggle = 0;
 		}
 		osDelay(20);
+	}
+}
+
+void IMUTask(void *argument) {
+	for (;;) {
+		if (osSemaphoreAcquire(IMUSempahore, osWaitForever) == osOK) {
+			osMutexAcquire(IMUDataMutex, osWaitForever);
+			IMUPIDProcessing();
+			PID(&IMULock);
+			osMutexRelease(IMUDataMutex);
+		}
 	}
 }
 
@@ -189,11 +252,16 @@ int main(void)
 	botInit();
 	osKernelInitialize();
 
+	//SEMAPHORES & MUTEX CREATION
+	IMUSempahore = osSemaphoreNew(1, 0, &IMUSemAttributes);
+	IMUDataMutex = osMutexNew(&IMUDataSemAttributes);
+
 	//THREAD CREATION
 	heartBeatHandle = osThreadNew(HeartBeat, NULL, &heartBeatTaskAttributes);
 	movementHandle = osThreadNew(MovementTask, NULL, &movementTaskAttributes);
 	servoHandle = osThreadNew(servoTask, NULL, &servoTaskAttributes);
 	pneumaticsHandle = osThreadNew(pneumaticsTask, NULL, &pneumaticsTaskAttributes);
+	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
 
 	osKernelStart();
 
@@ -204,6 +272,9 @@ int main(void)
 void TIM6_DAC_IRQHandler(void)
 {
 	led1=!led1;
+
+	if (IMULockMode) osSemaphoreRelease(IMUSempahore);
+
 	HAL_TIM_IRQHandler(&htim6);
 }
 
