@@ -13,7 +13,7 @@
 
 //HANDLES
 osThreadId_t heartBeatHandle;
-osThreadId_t movementHandle;
+osThreadId_t controlHandle;
 osThreadId_t servoHandle;
 osThreadId_t pneumaticsHandle;
 osThreadId_t IMUHandle;
@@ -29,8 +29,8 @@ const osThreadAttr_t heartBeatTaskAttributes = {
 		.priority = (osPriority_t) osPriorityIdle,
 };
 
-const osThreadAttr_t movementTaskAttributes = {
-		.name = "movementTask",
+const osThreadAttr_t controlTaskAttributes = {
+		.name = "controlTask",
 		.stack_size = 1024 * 4,
 		.priority = (osPriority_t) osPriorityNormal,
 };
@@ -67,6 +67,7 @@ const osMutexAttr_t IMUDataSemAttributes = {
 float FL, FR, BL, BR;
 float speedCap;
 volatile float currentHeading = 0, targetHeading = 0;
+float deadzone = 0.1;
 
 ///SERVO VARIABLES
 SERVO_t serv1, serv2, serv3, serv4;
@@ -94,10 +95,11 @@ void analogueMovement(void);
 void perspectiveControlProcess(float* x, float* y);
 void IMUPIDProcessing(void);
 void IMULockProcessing(float* w, float deadzone);
+void movementSnippet(void);
 
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
-void MovementTask(void *argument);
+void controlTask(void *argument);
 void servoTask(void *argument);
 void pneumaticsTask(void *arguement);
 void IMUTask(void *argument);
@@ -124,7 +126,6 @@ void analogueMovement(void) {
 	float y = ps4.joyL_y;
 	float x = ps4.joyL_x;
 	float w = 0.0;
-	float deadzone = 0.1;
 
 	if (fabs(x) < deadzone) x = 0.0;
 	if (fabs(y) < deadzone) y = 0.0;
@@ -187,6 +188,18 @@ void IMULockProcessing(float* w, float deadzone) {
 	}
 }
 
+void movementSnippet(void) {
+	if (fabs(ps4.joyL_x) > deadzone || fabs(ps4.joyL_y) > deadzone || fabs(ps4.joyR_x) > deadzone || fabs(error) > 1.0) {
+		if (servoControlActive) {
+			RNSStop(&rns);
+			if (IMULockMode) osMutexRelease(IMUDataMutex);
+			return;
+		}
+		analogueMovement();
+		RNSVelocity(FL, FR, BL, BR, &rns);
+	}
+}
+
 //TASK DEFINITIONS
 void HeartBeat(void *argument) {
 	for (;;) {
@@ -195,9 +208,54 @@ void HeartBeat(void *argument) {
 	}
 }
 
-void MovementTask(void *argument) {
+void controlTask(void *argument) {
 //still haven't fully incorporated any of the movement mechanics
+	uint8_t isMoving = 0;
+
+	//EMERGANCY BUTTON
+	if (ps4.button & PS) {
+		RNSStop(&rns);
+		NVIC_SystemReset();
+	}
+
+	//MOVEMENT ROUNTINE
+	if (IMULockMode) {
+		osMutexAcquire(IMUDataMutex, osWaitForever);
+		movementSnippet();
+		isMoving = 1;
+		osMutexRelease(IMUDataMutex);
+	} else {
+		movementSnippet();
+		isMoving = 1;
+	}
+
+	if (!isMoving) RNSStop(&rns);
+
+	//SLOW MODE
+	if (ps4.button & CROSS) {
+		speedCap = 0.5;
+	} else {
+		speedCap = 1.0;
+	}
+
+	//IMU LOCK
+	if ((ps4.button & SHARE) && !IMULockToggle) {
+		IMULockToggle = 1;
+		IMULockMode = !IMULockMode;
+	} else if (!(ps4.button & SHARE) && IMULockToggle) {
+		IMULockToggle = 0;
+	}
+
+	//PERSPECTIVE CONTROL
+	if ((ps4.button & OPTION) && !perspectiveControlToggle) {
+		perspectiveControlToggle = 1;
+		perspectiveControlMode = !perspectiveControlMode;
+		referenceHeading = currentHeading;
+	} else if (!(ps4.button & OPTION) && perspectiveControlToggle) {
+		perspectiveControlToggle = 0;
+	}
 }
+
 
 void servoTask(void *argument) {
 	for (;;) {
@@ -258,7 +316,7 @@ int main(void)
 
 	//THREAD CREATION
 	heartBeatHandle = osThreadNew(HeartBeat, NULL, &heartBeatTaskAttributes);
-	movementHandle = osThreadNew(MovementTask, NULL, &movementTaskAttributes);
+	controlHandle = osThreadNew(controlTask, NULL, &controlTaskAttributes);
 	servoHandle = osThreadNew(servoTask, NULL, &servoTaskAttributes);
 	pneumaticsHandle = osThreadNew(pneumaticsTask, NULL, &pneumaticsTaskAttributes);
 	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
