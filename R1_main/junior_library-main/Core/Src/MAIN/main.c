@@ -7,16 +7,14 @@
  * @brief  The application entry point.
  * @retval int
  */
-//DEFINITIONS
-#define PNEUMATICVALVE1 IP8_PIN //to be changed later
-#define PNEUMATICVALVE2 IP9_PIN //to be changed later
 
 //HANDLES
 osThreadId_t heartBeatHandle;
 osThreadId_t controlHandle;
-osThreadId_t servoHandle;
 osThreadId_t pneumaticsHandle;
 osThreadId_t IMUHandle;
+osThreadId_t servoArmsHandle;
+osThreadId_t KFSMechaHandle;
 
 //SEMAPHORES & MUTEXES
 osSemaphoreId_t IMUSempahore;
@@ -35,12 +33,6 @@ const osThreadAttr_t controlTaskAttributes = {
 		.priority = (osPriority_t) osPriorityNormal,
 };
 
-const osThreadAttr_t servoTaskAttributes = {
-		.name = "servoTask",
-		.stack_size = 1024,
-		.priority = (osPriority_t) osPriorityNormal,
-};
-
 const osThreadAttr_t pneumaticsTaskAttributes = {
 		.name = "pneumaticsTask",
 		.stack_size = 1024,
@@ -49,6 +41,18 @@ const osThreadAttr_t pneumaticsTaskAttributes = {
 
 const osThreadAttr_t IMUTaskAttributes = {
 		.name = "IMUTask",
+		.stack_size = 1024 * 4,
+		.priority = (osPriority_t) osPriorityAboveNormal,
+};
+
+const osThreadAttr_t servoArmsTaskAttributes = {
+		.name = "servoArmsTask",
+		.stack_size = 1024 * 4,
+		.priority = (osPriority_t) osPriorityAboveNormal,
+};
+
+const osThreadAttr_t KFSTaskAttributes = {
+		.name = "KFSTask",
 		.stack_size = 1024 * 4,
 		.priority = (osPriority_t) osPriorityAboveNormal,
 };
@@ -70,10 +74,11 @@ volatile float currentHeading = 0, targetHeading = 0;
 float deadzone = 0.1;
 
 ///SERVO VARIABLES
-SERVO_t serv1, serv2, serv3, serv4;
 volatile uint8_t servoControlActive = 0;
 
 ///PNEUMATICS VARIABLES
+#define PNEUMATICVALVE1 IP8_PIN //to be changed later, also make sure to reinitialize them as output pins
+#define PNEUMATICVALVE2 IP9_PIN //to be changed later
 uint8_t pneumaticsToggle = 0;
 
 ///PERSPECTIVE CONTROL VARIABLES
@@ -89,6 +94,25 @@ uint8_t IMULockMode = 0;
 uint8_t IMULockToggle = 0;
 volatile uint8_t IMUDataReady = 0;
 
+//SERVO ARMS VARIABLES
+SERVO_t serv1;
+SERVO_t serv2;
+uint8_t servoArmsToggle = 0;
+uint8_t servoArmsClosed = 0;
+
+//KFS VARIABLES
+#define IRSENSOR1 IP10_PIN //to be changed later (active low)
+#define IRSENSOR2 IP11_PIN //to be changed later (active low)
+#define MOTORTOPLAYER BDC1 //to be changed later
+#define MOTORBOTLAYER BDC2 //to be changed later
+uint8_t topMotToggle = 0;
+uint8_t botMotToggle = 0;
+uint8_t topMotKilled = 1;
+uint8_t botMotKilled = 1;
+uint8_t depositToggle = 0;
+uint8_t depositMode = 0;
+
+
 //FUNCTION PROTOTYPES
 void botInit(void);
 void analogueMovement(void);
@@ -100,18 +124,17 @@ void movementSnippet(void);
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
 void controlTask(void *argument);
-void servoTask(void *argument);
 void pneumaticsTask(void *arguement);
 void IMUTask(void *argument);
+void servoArmsTask(void *argument);
+void KFSTask(void *argument);
 
 //FUNCTION DEFINITIONS
 void botInit(void) {
 	PSxSlaveInit(&ps4, &hi2c1);
 
-	ServoxInit(&serv1, &htim3, TIM3_CHANNEL4_PIN, TIM_CHANNEL_4);
-	ServoxInit(&serv2, &htim3, TIM3_CHANNEL3_PIN, TIM_CHANNEL_3);
-	ServoxInit(&serv3, &htim9, TIM9_CHANNEL1_PIN, TIM_CHANNEL_1);
-	ServoxInit(&serv4, &htim9, TIM9_CHANNEL2_PIN, TIM_CHANNEL_2);
+	ServoxInit(&serv1, &htim1, TIM1_CHANNEL3_PIN, TIM_CHANNEL_3);
+	ServoxInit(&serv2, &htim1, TIM1_CHANNEL4_PIN, TIM_CHANNEL_4);
 
 	RNSEnquire(RNS_X_Y_IMU_LSA, &rns);
 	targetHeading = rns.enq.enq_buffer[0].data;
@@ -120,7 +143,6 @@ void botInit(void) {
 }
 
 //Processes user data for movement
-//NOTE: STILL HAVE NOT IMPLEMENTED IMU LOCK
 void analogueMovement(void) {
 	float tempFL, tempFR, tempBL, tempBR;
 	float y = ps4.joyL_y;
@@ -209,7 +231,6 @@ void HeartBeat(void *argument) {
 }
 
 void controlTask(void *argument) {
-//still haven't fully incorporated any of the movement mechanics
 	uint8_t isMoving = 0;
 
 	//EMERGANCY BUTTON
@@ -232,52 +253,21 @@ void controlTask(void *argument) {
 	if (!isMoving) RNSStop(&rns);
 
 	//SLOW MODE
-	if (ps4.button & CROSS) {
-		speedCap = 0.5;
-	} else {
-		speedCap = 1.0;
-	}
+	if (ps4.button & CROSS) speedCap = 0.5;
+	else speedCap = 1.0;
 
 	//IMU LOCK
 	if ((ps4.button & SHARE) && !IMULockToggle) {
 		IMULockToggle = 1;
 		IMULockMode = !IMULockMode;
-	} else if (!(ps4.button & SHARE) && IMULockToggle) {
-		IMULockToggle = 0;
-	}
+	} else if (!(ps4.button & SHARE) && IMULockToggle) IMULockToggle = 0;
 
 	//PERSPECTIVE CONTROL
 	if ((ps4.button & OPTION) && !perspectiveControlToggle) {
 		perspectiveControlToggle = 1;
 		perspectiveControlMode = !perspectiveControlMode;
 		referenceHeading = currentHeading;
-	} else if (!(ps4.button & OPTION) && perspectiveControlToggle) {
-		perspectiveControlToggle = 0;
-	}
-}
-
-
-void servoTask(void *argument) {
-	for (;;) {
-		float stick = ps4.joyL_x;
-		float ang = 500 + (stick + 1)*1000;
-		if (ps4.button & R1) {
-			servoControlActive = 1;
-			ServoSetPulse(&serv1, ang);
-		} else if (ps4.button & L1) {
-			servoControlActive = 1;
-			ServoSetPulse(&serv2, ang);
-		} else if (ps4.an_R2 > 0) {
-			servoControlActive = 1;
-			ServoSetPulse(&serv3, ang);
-		} else if (ps4.an_L2 > 0) {
-			servoControlActive = 1;
-			ServoSetPulse(&serv4, ang);
-		} else {
-			servoControlActive = 0;
-		}
-		osDelay(20);
-	}
+	} else if (!(ps4.button & OPTION) && perspectiveControlToggle) perspectiveControlToggle = 0;
 }
 
 void pneumaticsTask(void *arguement) {
@@ -286,9 +276,7 @@ void pneumaticsTask(void *arguement) {
 			pneumaticsToggle = 1;
 			HAL_GPIO_TogglePin(PNEUMATICVALVE1);
 			HAL_GPIO_TogglePin(PNEUMATICVALVE2);
-		} else if (!(ps4.button & CIRCLE) && pneumaticsToggle) {
-			pneumaticsToggle = 0;
-		}
+		} else if (!(ps4.button & CIRCLE) && pneumaticsToggle) pneumaticsToggle = 0;
 		osDelay(20);
 	}
 }
@@ -301,6 +289,58 @@ void IMUTask(void *argument) {
 			PID(&IMULock);
 			osMutexRelease(IMUDataMutex);
 		}
+	}
+}
+
+void servoArmsTask(void *argument) {
+	for (;;) {
+		if ((ps4.button & SQUARE) && !servoArmsToggle) {
+			servoArmsToggle = 1;
+			if (servoArmsClosed) {
+				servoArmsClosed = 0;
+				ServoSetPulse(&serv1, 500);
+				ServoSetPulse(&serv2, 500);
+			} else {
+				servoArmsClosed = 1;
+				ServoSetPulse(&serv1, 2000);
+				ServoSetPulse(&serv2, 2000);
+			}
+		} else if (!(ps4.button & SQUARE) && servoArmsToggle) servoArmsToggle = 0;
+		osDelay(20);
+	}
+}
+
+void KFSTask(void *argument) {
+	for (;;) {
+		if ((ps4.button & UP) && !topMotToggle) {
+			topMotToggle = 1;
+			if (topMotKilled) {
+				botMotKilled = 0;
+				WriteBDC(&MOTORTOPLAYER, 1000);
+			} else {
+				botMotKilled = 1;
+				StopBDC(&MOTORTOPLAYER);
+			}
+		} else if (!(ps4.button & UP) && topMotToggle) topMotToggle = 0;
+
+		if ((ps4.button & DOWN) && !botMotToggle) {
+			botMotToggle = 1;
+			if (botMotKilled) {
+				botMotKilled = 0;
+				WriteBDC(&MOTORBOTLAYER, 1000);
+			} else {
+				botMotKilled = 1;
+				StopBDC(&MOTORBOTLAYER);
+			}
+		} else if (!(ps4.button & DOWN) && botMotToggle) botMotToggle = 0;
+
+		if ((ps4.button & RIGHT) && !depositToggle) {
+			depositToggle = 1;
+			depositMode = !depositMode;
+		} else if (!(ps4.button & RIGHT) && depositToggle) depositToggle= 0;
+
+		if (!HAL_GPIO_ReadPin(IRSENSOR1) && !depositMode) StopBDC(&MOTORTOPLAYER);
+		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode) StopBDC(&MOTORBOTLAYER);
 	}
 }
 
@@ -317,9 +357,10 @@ int main(void)
 	//THREAD CREATION
 	heartBeatHandle = osThreadNew(HeartBeat, NULL, &heartBeatTaskAttributes);
 	controlHandle = osThreadNew(controlTask, NULL, &controlTaskAttributes);
-	servoHandle = osThreadNew(servoTask, NULL, &servoTaskAttributes);
 	pneumaticsHandle = osThreadNew(pneumaticsTask, NULL, &pneumaticsTaskAttributes);
 	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
+	servoArmsHandle = osThreadNew(servoArmsTask, NULL, &servoArmsTaskAttributes);
+	KFSMechaHandle = osThreadNew(KFSTask, NULL, &KFSTaskAttributes);
 
 	osKernelStart();
 
