@@ -340,7 +340,7 @@ void KFSTask(void *argument) {
 		} else if (!(ps4.button & RIGHT) && depositToggle) depositToggle= 0;
 
 		if (!HAL_GPIO_ReadPin(IRSENSOR1) && !depositMode) StopBDC(&MOTORTOPLAYER);
-		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode) StopBDC(&MOTORBOTLAYER);
+		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode && topMotKilled) StopBDC(&MOTORBOTLAYER);
 	}
 }
 
