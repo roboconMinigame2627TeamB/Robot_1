@@ -77,20 +77,20 @@ float deadzone = 0.1;
 volatile uint8_t servoControlActive = 0;
 
 ///PNEUMATICS VARIABLES
-#define PNEUMATICVALVE1 IP8_PIN //to be changed later, also make sure to reinitialize them as output pins
-#define PNEUMATICVALVE2 IP9_PIN //to be changed later
+#define PNEUMATICVALVE1 IP1_PIN //to be changed later, also make sure to reinitialize them as output pins
+#define PNEUMATICVALVE2 IP5_PIN //to be changed later
 uint8_t pneumaticsToggle = 0;
 
 ///PERSPECTIVE CONTROL VARIABLES
 volatile float referenceHeading = 0.0;
-uint8_t perspectiveControlMode = 0;
+uint8_t perspectiveControlMode = 1;
 uint8_t perspectiveControlToggle = 0;
 
 //IMU LOCK VARIABLES
 PID_t IMULock;
 float wPID = 0.0, error = 0.0;
 float kp = 1.0, ki = 0.0, kd = 0.0;
-uint8_t IMULockMode = 0;
+uint8_t IMULockMode = 1;
 uint8_t IMULockToggle = 0;
 volatile uint8_t IMUDataReady = 0;
 
@@ -132,6 +132,9 @@ void KFSTask(void *argument);
 //FUNCTION DEFINITIONS
 void botInit(void) {
 	PSxSlaveInit(&ps4, &hi2c1);
+
+	PIDSourceInit(&error, &wPID, &IMULock);
+	PIDGainInit(0.02, 1.0, 1.0/180.0, 1.0, kp, ki, kd, 100.0, &IMULock);
 
 	ServoxInit(&serv1, &htim1, TIM1_CHANNEL3_PIN, TIM_CHANNEL_3);
 	ServoxInit(&serv2, &htim1, TIM1_CHANNEL4_PIN, TIM_CHANNEL_4);
@@ -210,18 +213,6 @@ void IMULockProcessing(float* w, float deadzone) {
 	}
 }
 
-void movementSnippet(void) {
-	if (fabs(ps4.joyL_x) > deadzone || fabs(ps4.joyL_y) > deadzone || fabs(ps4.joyR_x) > deadzone || fabs(error) > 1.0) {
-		if (servoControlActive) {
-			RNSStop(&rns);
-			if (IMULockMode) osMutexRelease(IMUDataMutex);
-			return;
-		}
-		analogueMovement();
-		RNSVelocity(FL, FR, BL, BR, &rns);
-	}
-}
-
 //TASK DEFINITIONS
 void HeartBeat(void *argument) {
 	for (;;) {
@@ -231,43 +222,50 @@ void HeartBeat(void *argument) {
 }
 
 void controlTask(void *argument) {
-	uint8_t isMoving = 0;
+	for (;;) {
+		uint8_t isMoving = 0;
+		//EMERGANCY BUTTON
+		if (ps4.button & SQUARE) {
+			RNSStop(&rns);
+			NVIC_SystemReset();
+		}
 
-	//EMERGANCY BUTTON
-	if (ps4.button & PS) {
-		RNSStop(&rns);
-		NVIC_SystemReset();
-	}
-
-	//MOVEMENT ROUNTINE
-	if (IMULockMode) {
+		//STANDARD MOVEMENT
 		osMutexAcquire(IMUDataMutex, osWaitForever);
-		movementSnippet();
-		isMoving = 1;
+		if (fabs(ps4.joyL_x) > 0.15 || fabs(ps4.joyL_y) > 0.15 || fabs(ps4.joyR_x) > 0.15 || fabs(error) > 1.0) {
+			if (servoControlActive) {
+				RNSStop(&rns);
+				osMutexRelease(IMUDataMutex);
+				return;
+			}
+			analogueMovement();
+			RNSVelocity(FL, FR, BL, BR, &rns);
+			isMoving = 1;
+		}
 		osMutexRelease(IMUDataMutex);
-	} else {
-		movementSnippet();
-		isMoving = 1;
+
+		//STOP ALL MOVEMENT IF NO ACTIVITY
+		if (!isMoving) RNSStop(&rns);
+
+		//SLOW MODE
+		if (ps4.button & CROSS) speedCap = 0.5;
+		else speedCap = 1.0;
+
+		//IMU LOCK
+		if ((ps4.button & SHARE) && !IMULockToggle) {
+			IMULockToggle = 1;
+			IMULockMode = !IMULockMode;
+		} else if (!(ps4.button & SHARE) && IMULockToggle) IMULockToggle = 0;
+
+		//PERSPECTIVE CONTROL
+		if ((ps4.button & OPTION) && !perspectiveControlToggle) {
+			perspectiveControlToggle = 1;
+			perspectiveControlMode = !perspectiveControlMode;
+			referenceHeading = currentHeading;
+		} else if (!(ps4.button & OPTION) && perspectiveControlToggle) perspectiveControlToggle = 0;
+
+		osDelay(20);
 	}
-
-	if (!isMoving) RNSStop(&rns);
-
-	//SLOW MODE
-	if (ps4.button & CROSS) speedCap = 0.5;
-	else speedCap = 1.0;
-
-	//IMU LOCK
-	if ((ps4.button & SHARE) && !IMULockToggle) {
-		IMULockToggle = 1;
-		IMULockMode = !IMULockMode;
-	} else if (!(ps4.button & SHARE) && IMULockToggle) IMULockToggle = 0;
-
-	//PERSPECTIVE CONTROL
-	if ((ps4.button & OPTION) && !perspectiveControlToggle) {
-		perspectiveControlToggle = 1;
-		perspectiveControlMode = !perspectiveControlMode;
-		referenceHeading = currentHeading;
-	} else if (!(ps4.button & OPTION) && perspectiveControlToggle) perspectiveControlToggle = 0;
 }
 
 void pneumaticsTask(void *arguement) {
@@ -315,10 +313,10 @@ void KFSTask(void *argument) {
 		if ((ps4.button & UP) && !topMotToggle) {
 			topMotToggle = 1;
 			if (topMotKilled) {
-				botMotKilled = 0;
+				topMotKilled = 0;
 				WriteBDC(&MOTORTOPLAYER, 1000);
 			} else {
-				botMotKilled = 1;
+				topMotKilled = 1;
 				StopBDC(&MOTORTOPLAYER);
 			}
 		} else if (!(ps4.button & UP) && topMotToggle) topMotToggle = 0;
@@ -341,6 +339,7 @@ void KFSTask(void *argument) {
 
 		if (!HAL_GPIO_ReadPin(IRSENSOR1) && !depositMode) StopBDC(&MOTORTOPLAYER);
 		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode && topMotKilled) StopBDC(&MOTORBOTLAYER);
+		osDelay(20);
 	}
 }
 
@@ -372,7 +371,7 @@ void TIM6_DAC_IRQHandler(void)
 {
 	led1=!led1;
 
-	if (IMULockMode) osSemaphoreRelease(IMUSempahore);
+	osSemaphoreRelease(IMUSempahore);
 
 	HAL_TIM_IRQHandler(&htim6);
 }

@@ -11,7 +11,7 @@ void set(void) {
 	Initialize();
 //	PSxInitDMA(&ps4,&hi2c1);
 	TIMxInit(&htim6, 20000, 84, 5, 0); //20ms
-//	RNS_config(&hcan1);
+	RNS_config(&hcan1);
 //	MODNRobotBaseInit(MODN_FWD_OMNI, 2.0, 1.0, &Modn);
 //	MODNRobotVelInit(&xr, &yr, &wr, &Modn);
 //	MODNWheelVelInit(&v1, &v2, &v3, &v4, &Modn);
@@ -24,7 +24,7 @@ void RNS_config(CAN_HandleTypeDef* hcanx) {
 	RNSInit(hcanx, &rns);
 
 	//Encoder dcba(0-swap, 1-keep)  BDC dcba(0-keep, 1-swap) //0x00 0x00 0x
-	RNSSet(&rns, RNS_DEVICE_CONFIG, (float) 0b00010101, (float) fwd_omni, (float) roboconPID);
+	RNSSet(&rns, RNS_DEVICE_CONFIG, (float) 0b00001101, (float) fwd_omni, (float) roboconPID);
 	RNSSet(&rns, RNS_X_Y_ENC_CONFIG, 0.125 / 4000 * 3.142, 1.0, 0.125 / 4000 * 3.142, 1.0); //1.0 for nonswap , 2.0 for swap
 	RNSSet(&rns, RNS_F_KCD_PTD, 203.20885/ 204.50492, (float)(0.125 * 3.142 / 203.20885));
 	RNSSet(&rns, RNS_B_KCD_PTD, 203.56232/ 203.60160, (float)(0.125 * 3.142 / 203.56232));

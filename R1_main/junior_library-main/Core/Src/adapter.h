@@ -51,7 +51,7 @@ extern "C" {
 
 
 /* Private defines -----------------------------------------------------------*/
-//#define FREERTOS
+#define FREERTOS
 
 
 #ifdef mainboard3_3
