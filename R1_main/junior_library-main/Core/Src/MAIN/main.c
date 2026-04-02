@@ -11,10 +11,9 @@
 //HANDLES
 osThreadId_t heartBeatHandle;
 osThreadId_t controlHandle;
-osThreadId_t pneumaticsHandle;
+osThreadId_t functionalHandle;
 osThreadId_t IMUHandle;
 osThreadId_t servoArmsHandle;
-osThreadId_t KFSMechaHandle;
 
 //SEMAPHORES & MUTEXES
 osSemaphoreId_t IMUSempahore;
@@ -33,8 +32,8 @@ const osThreadAttr_t controlTaskAttributes = {
 		.priority = (osPriority_t) osPriorityNormal,
 };
 
-const osThreadAttr_t pneumaticsTaskAttributes = {
-		.name = "pneumaticsTask",
+const osThreadAttr_t functionalTaskAttributes = {
+		.name = "functionalTask",
 		.stack_size = 1024,
 		.priority = (osPriority_t) osPriorityNormal,
 };
@@ -47,12 +46,6 @@ const osThreadAttr_t IMUTaskAttributes = {
 
 const osThreadAttr_t servoArmsTaskAttributes = {
 		.name = "servoArmsTask",
-		.stack_size = 1024 * 4,
-		.priority = (osPriority_t) osPriorityAboveNormal,
-};
-
-const osThreadAttr_t KFSTaskAttributes = {
-		.name = "KFSTask",
 		.stack_size = 1024 * 4,
 		.priority = (osPriority_t) osPriorityAboveNormal,
 };
@@ -113,6 +106,8 @@ uint8_t topMotKilled = 1;
 uint8_t botMotKilled = 1;
 uint8_t depositToggle = 0;
 uint8_t depositMode = 0;
+volatile int mot1pwm = 0;
+volatile int mot2pwm = 0;
 
 
 //FUNCTION PROTOTYPES
@@ -125,7 +120,7 @@ void IMULockProcessing(float* w, float deadzone);
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
 void controlTask(void *argument);
-void pneumaticsTask(void *arguement);
+void functionalTask(void *arguement);
 void IMUTask(void *argument);
 void servoArmsTask(void *argument);
 void KFSTask(void *argument);
@@ -225,6 +220,10 @@ void HeartBeat(void *argument) {
 void controlTask(void *argument) {
 	for (;;) {
 		uint8_t isMoving = 0;
+		WriteBDC(&BDC1, mot1pwm);
+		SHIFTREGShift(&SR);
+
+
 		//EMERGANCY BUTTON
 		if (ps4.button & PS) {
 			RNSStop(&rns);
@@ -269,13 +268,28 @@ void controlTask(void *argument) {
 	}
 }
 
-void pneumaticsTask(void *arguement) {
+void functionalTask(void *arguement) {
 	for (;;) {
+		//PNEUMATICS
 		if ((ps4.button & CIRCLE) && !pneumaticsToggle) {
 			pneumaticsToggle = 1;
 			HAL_GPIO_TogglePin(PNEUMATICVALVE1);
 			HAL_GPIO_TogglePin(PNEUMATICVALVE2);
 		} else if (!(ps4.button & CIRCLE) && pneumaticsToggle) pneumaticsToggle = 0;
+
+		//KFS TOP MOTOR
+		if ((ps4.button & UP) && !topMotToggle) {
+			topMotToggle = 1;
+			if (mot1pwm == 20000) mot1pwm = 0;
+			else mot1pwm = 20000;
+		} else if (!(ps4.button & UP) && topMotToggle) topMotToggle = 0;
+
+		//KFS BOT MOTOR
+		if ((ps4.button & DOWN) && !botMotToggle) {
+			botMotToggle = 1;
+			if (mot2pwm == 20000) mot2pwm = 0;
+			else mot2pwm = 20000;
+		} else if (!(ps4.button & DOWN) && botMotToggle) botMotToggle = 0;
 		osDelay(20);
 	}
 }
@@ -315,6 +329,7 @@ void servoArmsTask(void *argument) {
 			} else {
 				StopBDC(&BDC3);
 				StopBDC(&BDC4);
+				SHIFTREGShift(&SR);
 			}
 		} else if (!(ps4.button & LEFT) && servoArmsMotorToggle) servoArmsMotorToggle = 0;
 		osDelay(20);
@@ -323,35 +338,13 @@ void servoArmsTask(void *argument) {
 
 void KFSTask(void *argument) {
 	for (;;) {
-		if ((ps4.button & UP) && !topMotToggle) {
-			topMotToggle = 1;
-			if (topMotKilled) {
-				topMotKilled = 0;
-				WriteBDC(&MOTORTOPLAYER, 1000);
-			} else {
-				topMotKilled = 1;
-				StopBDC(&MOTORTOPLAYER);
-			}
-		} else if (!(ps4.button & UP) && topMotToggle) topMotToggle = 0;
-
-		if ((ps4.button & DOWN) && !botMotToggle) {
-			botMotToggle = 1;
-			if (botMotKilled) {
-				botMotKilled = 0;
-				WriteBDC(&MOTORBOTLAYER, 1000);
-			} else {
-				botMotKilled = 1;
-				StopBDC(&MOTORBOTLAYER);
-			}
-		} else if (!(ps4.button & DOWN) && botMotToggle) botMotToggle = 0;
-
 		if ((ps4.button & RIGHT) && !depositToggle) {
 			depositToggle = 1;
 			depositMode = !depositMode;
 		} else if (!(ps4.button & RIGHT) && depositToggle) depositToggle= 0;
 
-		if (!HAL_GPIO_ReadPin(IRSENSOR1) && !depositMode) StopBDC(&MOTORTOPLAYER);
-		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode && topMotKilled) StopBDC(&MOTORBOTLAYER);
+//		if (!HAL_GPIO_ReadPin(IRSENSOR1) && !depositMode) StopBDC(&MOTORTOPLAYER);
+//		if (!HAL_GPIO_ReadPin(IRSENSOR2) && !depositMode && topMotKilled) StopBDC(&MOTORBOTLAYER);
 		osDelay(20);
 	}
 }
@@ -369,10 +362,9 @@ int main(void)
 	//THREAD CREATION
 	heartBeatHandle = osThreadNew(HeartBeat, NULL, &heartBeatTaskAttributes);
 	controlHandle = osThreadNew(controlTask, NULL, &controlTaskAttributes);
-	pneumaticsHandle = osThreadNew(pneumaticsTask, NULL, &pneumaticsTaskAttributes);
+	functionalHandle = osThreadNew(functionalTask, NULL, &functionalTaskAttributes);
 	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
 	servoArmsHandle = osThreadNew(servoArmsTask, NULL, &servoArmsTaskAttributes);
-	KFSMechaHandle = osThreadNew(KFSTask, NULL, &KFSTaskAttributes);
 
 	osKernelStart();
 
@@ -383,7 +375,6 @@ int main(void)
 void TIM6_DAC_IRQHandler(void)
 {
 	led1=!led1;
-
 	osSemaphoreRelease(IMUSempahore);
 
 	HAL_TIM_IRQHandler(&htim6);
