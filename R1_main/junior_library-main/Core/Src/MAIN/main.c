@@ -14,6 +14,7 @@ osThreadId_t controlHandle;
 osThreadId_t functionalHandle;
 osThreadId_t IMUHandle;
 osThreadId_t servoArmsHandle;
+osThreadId_t tuningHandle;
 
 //SEMAPHORES & MUTEXES
 osSemaphoreId_t IMUSempahore;
@@ -50,6 +51,12 @@ const osThreadAttr_t servoArmsTaskAttributes = {
 		.priority = (osPriority_t) osPriorityAboveNormal,
 };
 
+const osThreadAttr_t tuningTaskAttributes = {
+		.name = "tuningTask",
+		.stack_size = 1024,
+		.priority = (osPriority_t) osPriorityLow,
+};
+
 const osSemaphoreAttr_t IMUSemAttributes = {
 		.name = "IMUSem"
 };
@@ -60,14 +67,16 @@ const osMutexAttr_t IMUDataSemAttributes = {
 
 //GLOBAL VARIABLES
 
+///TUNING VARIABLES
+uint8_t tuningModeActive = 0;
+uint8_t tuningModeToggle = 0;
+float testSpeed = 1.0;
+
 ///COMMON MOVEMENT & ANGLE VARIABLES
 float FL, FR, BL, BR;
 float speedCap;
 volatile float currentHeading = 0, targetHeading = 0;
 float deadzone = 0.1;
-
-///SERVO VARIABLES
-volatile uint8_t servoControlActive = 0;
 
 ///PNEUMATICS VARIABLES
 #define PNEUMATICVALVE1 IP1_PIN //to be changed later, also make sure to reinitialize them as output pins
@@ -82,7 +91,7 @@ uint8_t perspectiveControlToggle = 0;
 //IMU LOCK VARIABLES
 PID_t IMULock;
 float wPID = 0.0, error = 0.0;
-float kp = 1.0, ki = 0.0, kd = 0.0;
+//float kp = 1.0, ki = 0.0, kd = 0.0;
 uint8_t IMULockMode = 1;
 uint8_t IMULockToggle = 0;
 volatile uint8_t IMUDataReady = 0;
@@ -124,11 +133,11 @@ void controlTask(void *argument);
 void functionalTask(void *arguement);
 void IMUTask(void *argument);
 void servoArmsTask(void *argument);
-void KFSTask(void *argument);
+void tuningTask(void *argument);
 
 //motor pid tuning
 volatile float aw = 0.0, bw = 0.0, cw = 0.0, dw = 0.0;
-//volatile float kp = 0.0, ki = 0.0, kd = 0.0;
+volatile float kp = 0.0, ki = 0.0, kd = 0.0;
 volatile int mode = 2;
 volatile int tune_finish = 0;
 
@@ -143,83 +152,41 @@ void process_command() {
     if (!cmd_ready) return;
 
     char cmd = rx_buf[0];
-    float val = atof((char*)&rx_buf[1]); // Convert everything after the first char to float
+    float val = atof((char*)&rx_buf[1]);
+
+    uint8_t current_pid_channel;
+    if (mode == 0) current_pid_channel = RNS_F_LEFT_VEL_PID;
+    else if (mode == 1) current_pid_channel = RNS_F_RIGHT_VEL_PID;
+    else if (mode == 2) current_pid_channel = RNS_B_LEFT_VEL_PID;
+    else current_pid_channel = RNS_B_RIGHT_VEL_PID;
 
     switch(cmd) {
-        case 'v': case 'V':
-        	aw = val;
-        	bw = val;
-        	cw = val;
-        	dw = val;
-            RNSVelocity(aw, bw, cw, dw, &rns);
-            break;
+        // Removed 'V' and 'U' commands so it doesn't fight the PS4 controller
+
         case 'p': case 'P':
             kp = val;
-
-
-            RNSSet(&rns, RNS_B_RIGHT_VEL_PID, kp, ki, kd);
-
+            RNSSet(&rns, current_pid_channel, kp, ki, kd);
             break;
+
         case 'i': case 'I':
             ki = val;
-
-
-            RNSSet(&rns, RNS_B_RIGHT_VEL_PID, kp, ki, kd);
-
+            RNSSet(&rns, current_pid_channel, kp, ki, kd);
             break;
+
         case 'd': case 'D':
             kd = val;
-
-
-            RNSSet(&rns, RNS_B_RIGHT_VEL_PID, kp, ki, kd);
-
+            RNSSet(&rns, current_pid_channel, kp, ki, kd);
             break;
-        case 'n': case 'N': // Send 'n' to advance to the Next motor
-            mode++;
-            aw = 0; bw = 0; cw = 0; dw = 0; // Stop previous motor
-            RNSVelocity(aw, bw, cw, dw, &rns);
 
+        case 'n': case 'N':
+            mode++;
             if(mode > 3) {
                 mode = 0;
-                tune_finish = 1;
             }
             break;
     }
     rx_idx = 0;
     cmd_ready = 0;
-}
-
-float actual_V = 0.0;
-float target_V = 0.0;
-
-void tune_motor() {
-    uint32_t last_call = 0;
-    tune_finish = 0;
-    mode = 0;
-    HAL_UART_Receive_IT(&huart5, &uart5_rx, 1);
-
-    aw = 0; bw = 0; cw = 0; dw = 0;
-    RNSVelocity(0, 0, 0, 0, &rns);
-    while(!tune_finish) {
-        process_command();
-        uint32_t now = HAL_GetTick();
-        if (now - last_call >= 20) {
-
-        	RNSEnquire(RNS_VEL_BOTH, &rns);
-
-            if (mode == 0)      { actual_V = rns.RNS_data.common_buffer[0].data; target_V = aw; }
-            else if (mode == 1) { actual_V = rns.RNS_data.common_buffer[1].data; target_V = bw; }
-            else if (mode == 2) { actual_V = rns.RNS_data.common_buffer[2].data; target_V = cw; }
-            else if (mode == 3) { actual_V = rns.RNS_data.common_buffer[3].data; target_V = dw; }
-
-//            sprintf(buffer, "%.2f,%.2f\r\n", actual_V, target_V);
-            sprintf(buffer, "%.2f,%.2f,%.2f,%.2f\r\n", rns.RNS_data.common_buffer[0].data,rns.RNS_data.common_buffer[1].data,rns.RNS_data.common_buffer[2].data,rns.RNS_data.common_buffer[3].data);
-            UARTPrintString(&huart5, buffer);
-
-            last_call = now;
-        }
-    }
-    RNSStop(&rns);
 }
 
 //FUNCTION DEFINITIONS
@@ -238,7 +205,7 @@ void botInit(void) {
 	referenceHeading = rns.enq.enq_buffer[0].data;
 }
 
-//Processes user data for movement
+///Processes user data for movement
 void analogueMovement(void) {
 	float tempFL, tempFR, tempBL, tempBR;
 	float y = ps4.joyL_y;
@@ -329,14 +296,28 @@ void controlTask(void *argument) {
 			NVIC_SystemReset();
 		}
 
+		//TUNING MODE TOGGLE
+		if ((ps4.button & L3) && !tuningModeToggle) {
+			tuningModeToggle = 1;
+			tuningModeActive = !tuningModeActive; // Flips between 1 and 0
+		} else if (!(ps4.button & L3) && tuningModeToggle) {
+			tuningModeToggle = 0;
+		}
+
+		//TUNING MODE MOVEMENT
+		if (tuningModeActive && (abs(ps4.an_L2) > 0)) {
+			FL = testSpeed;
+			FR = testSpeed;
+			BL = testSpeed;
+			BR = testSpeed;
+
+			RNSVelocity(FL, FR, BL, BR, &rns);
+			isMoving = 1;
+		}
+
 		//STANDARD MOVEMENT
 		osMutexAcquire(IMUDataMutex, osWaitForever);
 		if (fabs(ps4.joyL_x) > 0.15 || fabs(ps4.joyL_y) > 0.15 || fabs(ps4.joyR_x) > 0.15 || fabs(error) > 1.0) {
-			if (servoControlActive) {
-				RNSStop(&rns);
-				osMutexRelease(IMUDataMutex);
-				return;
-			}
 			analogueMovement();
 			RNSVelocity(FL, FR, BL, BR, &rns);
 			isMoving = 1;
@@ -344,11 +325,14 @@ void controlTask(void *argument) {
 		osMutexRelease(IMUDataMutex);
 
 		//STOP ALL MOVEMENT IF NO ACTIVITY
-		if (!isMoving) RNSStop(&rns);
+		if (!isMoving) {
+			FL = 0; FR = 0; BL = 0; BR = 0;
+			RNSStop(&rns);
+		}
 
 		//SLOW MODE
-		if (ps4.button & CROSS) speedCap = 0.5;
-		else speedCap = 1.0;
+		if (ps4.button & CROSS) speedCap = 1.0;
+		else speedCap = 2.0;
 
 		//IMU LOCK
 		if ((ps4.button & SHARE) && !IMULockToggle) {
@@ -479,10 +463,33 @@ void servoArmsTask(void *argument) {
 	}
 }
 
+float actual_V;
+float target_V;
+
+void tuningTask(void *argument) {
+    HAL_UART_Receive_IT(&huart5, &uart5_rx, 1);
+    mode = 0;
+
+    for (;;) {
+        process_command();
+
+        RNSEnquire(RNS_VEL_BOTH, &rns);
+
+        if (mode == 0)      { actual_V = rns.RNS_data.common_buffer[0].data; target_V = FL; }
+        else if (mode == 1) { actual_V = rns.RNS_data.common_buffer[1].data; target_V = FR; }
+        else if (mode == 2) { actual_V = rns.RNS_data.common_buffer[2].data; target_V = BL; }
+        else if (mode == 3) { actual_V = rns.RNS_data.common_buffer[3].data; target_V = BR; }
+
+        sprintf(buffer, "%.2f,%.2f\r\n", actual_V, target_V);
+        UARTPrintString(&huart5, buffer);
+
+        osDelay(20);
+    }
+}
+
 int main(void)
 {
 	set();
-//	tune_motor();
 	botInit();
 	osKernelInitialize();
 
@@ -496,6 +503,7 @@ int main(void)
 	functionalHandle = osThreadNew(functionalTask, NULL, &functionalTaskAttributes);
 	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
 	servoArmsHandle = osThreadNew(servoArmsTask, NULL, &servoArmsTaskAttributes);
+	tuningHandle = osThreadNew(tuningTask, NULL, &tuningTaskAttributes);
 
 	osKernelStart();
 
