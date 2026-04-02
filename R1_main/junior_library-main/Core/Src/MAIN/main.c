@@ -99,6 +99,8 @@ SERVO_t serv1;
 SERVO_t serv2;
 uint8_t servoArmsToggle = 0;
 uint8_t servoArmsClosed = 0;
+uint8_t servoArmsMotorToggle = 0;
+uint8_t armMotorsON = 0;
 
 //KFS VARIABLES
 #define IRSENSOR1 IP10_PIN //to be changed later (active low)
@@ -119,7 +121,6 @@ void analogueMovement(void);
 void perspectiveControlProcess(float* x, float* y);
 void IMUPIDProcessing(void);
 void IMULockProcessing(float* w, float deadzone);
-void movementSnippet(void);
 
 //TASK PROTOTYPES
 void HeartBeat(void *argument);
@@ -225,7 +226,7 @@ void controlTask(void *argument) {
 	for (;;) {
 		uint8_t isMoving = 0;
 		//EMERGANCY BUTTON
-		if (ps4.button & SQUARE) {
+		if (ps4.button & PS) {
 			RNSStop(&rns);
 			NVIC_SystemReset();
 		}
@@ -304,6 +305,18 @@ void servoArmsTask(void *argument) {
 				ServoSetPulse(&serv2, 2000);
 			}
 		} else if (!(ps4.button & SQUARE) && servoArmsToggle) servoArmsToggle = 0;
+
+		if ((ps4.button & LEFT) && !servoArmsMotorToggle) {
+			servoArmsMotorToggle = 1;
+			armMotorsON = !armMotorsON;
+			if (!armMotorsON) {
+				WriteBDC(&BDC3, 500);
+				WriteBDC(&BDC4, 500);
+			} else {
+				StopBDC(&BDC3);
+				StopBDC(&BDC4);
+			}
+		} else if (!(ps4.button & LEFT) && servoArmsMotorToggle) servoArmsMotorToggle = 0;
 		osDelay(20);
 	}
 }
