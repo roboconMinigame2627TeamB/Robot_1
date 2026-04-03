@@ -116,7 +116,8 @@ SERVO_t serv1;
 SERVO_t serv2;
 uint8_t servoArmsMotorToggle = 0;
 uint8_t armMotorsON = 0;
-int servoPos = 1500;
+int servo1Pos = 1500;
+int servo2Pos = 700;
 volatile int mot3pwm = 0;
 volatile int mot4pwm = 0;
 
@@ -438,22 +439,26 @@ void servoArmsTask(void *argument) {
 		const int sweepSpeed = 15;
 
 		if (ps4.button & R1) {
-			servoPos += sweepSpeed;
-			if (servoPos > servoMax) servoPos = servoMax;
+			servo1Pos += sweepSpeed;
+			if (servo1Pos > servoMax) servo1Pos = servoMax;
+			servo2Pos -= sweepSpeed;
+			if (servo2Pos < servoMin) servo2Pos = servoMin;
 		} else if (ps4.button & L1) {
-			servoPos -= sweepSpeed;
-			if (servoPos < servoMin) servoPos = servoMin;
+			servo1Pos -= sweepSpeed;
+			if (servo1Pos < servoMin) servo1Pos = servoMin;
+			servo2Pos += sweepSpeed;
+			if (servo2Pos > servoMax) servo2Pos = servoMax;
 		}
 
-		ServoSetPulse(&serv1, servoPos);
-		ServoSetPulse(&serv2, servoPos);
+		ServoSetPulse(&serv1, servo1Pos);
+		ServoSetPulse(&serv2, servo2Pos);
 
 		if ((ps4.button & LEFT) && !servoArmsMotorToggle) {
 			servoArmsMotorToggle = 1;
 			armMotorsON = !armMotorsON;
 			if (!armMotorsON) {
-				mot3pwm = 500;
-				mot4pwm = 500;
+				mot3pwm = -20000;
+				mot4pwm = 20000;
 			} else {
 				mot3pwm = 0;
 				mot4pwm = 0;
