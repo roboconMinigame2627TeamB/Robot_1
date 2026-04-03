@@ -14,7 +14,6 @@ osThreadId_t controlHandle;
 osThreadId_t functionalHandle;
 osThreadId_t IMUHandle;
 osThreadId_t servoArmsHandle;
-osThreadId_t tuningHandle;
 
 //SEMAPHORES & MUTEXES
 osSemaphoreId_t IMUSempahore;
@@ -35,7 +34,7 @@ const osThreadAttr_t controlTaskAttributes = {
 
 const osThreadAttr_t functionalTaskAttributes = {
 		.name = "functionalTask",
-		.stack_size = 1024,
+		.stack_size = 1024 * 8,
 		.priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -49,12 +48,6 @@ const osThreadAttr_t servoArmsTaskAttributes = {
 		.name = "servoArmsTask",
 		.stack_size = 1024 * 4,
 		.priority = (osPriority_t) osPriorityAboveNormal,
-};
-
-const osThreadAttr_t tuningTaskAttributes = {
-		.name = "tuningTask",
-		.stack_size = 1024,
-		.priority = (osPriority_t) osPriorityLow,
 };
 
 const osSemaphoreAttr_t IMUSemAttributes = {
@@ -77,6 +70,8 @@ float FL, FR, BL, BR;
 float speedCap;
 volatile float currentHeading = 0, targetHeading = 0;
 float deadzone = 0.1;
+float actual_V;
+float target_V;
 
 ///PNEUMATICS VARIABLES
 #define PNEUMATICVALVE1 IP1_PIN //to be changed later, also make sure to reinitialize them as output pins
@@ -354,6 +349,18 @@ void controlTask(void *argument) {
 
 void functionalTask(void *arguement) {
 	for (;;) {
+		process_command();
+
+		RNSEnquire(RNS_VEL_BOTH, &rns);
+
+		if (mode == 0)      { actual_V = rns.RNS_data.common_buffer[0].data; target_V = FL; }
+		else if (mode == 1) { actual_V = rns.RNS_data.common_buffer[1].data; target_V = FR; }
+		else if (mode == 2) { actual_V = rns.RNS_data.common_buffer[2].data; target_V = BL; }
+		else if (mode == 3) { actual_V = rns.RNS_data.common_buffer[3].data; target_V = BR; }
+
+		sprintf(buffer, "%.2f,%.2f\r\n", actual_V, target_V);
+		UARTPrintString(&huart5, buffer);
+
 		//PNEUMATICS
 		if ((ps4.button & CIRCLE) && !pneumaticsToggle) {
 			pneumaticsToggle = 1;
@@ -468,26 +475,8 @@ void servoArmsTask(void *argument) {
 	}
 }
 
-float actual_V;
-float target_V;
-
 void tuningTask(void *argument) {
-    HAL_UART_Receive_IT(&huart5, &uart5_rx, 1);
-    mode = 0;
-
     for (;;) {
-        process_command();
-
-        RNSEnquire(RNS_VEL_BOTH, &rns);
-
-        if (mode == 0)      { actual_V = rns.RNS_data.common_buffer[0].data; target_V = FL; }
-        else if (mode == 1) { actual_V = rns.RNS_data.common_buffer[1].data; target_V = FR; }
-        else if (mode == 2) { actual_V = rns.RNS_data.common_buffer[2].data; target_V = BL; }
-        else if (mode == 3) { actual_V = rns.RNS_data.common_buffer[3].data; target_V = BR; }
-
-        sprintf(buffer, "%.2f,%.2f\r\n", actual_V, target_V);
-        UARTPrintString(&huart5, buffer);
-
         osDelay(20);
     }
 }
@@ -496,6 +485,9 @@ int main(void)
 {
 	set();
 	botInit();
+	HAL_UART_Receive_IT(&huart5, &uart5_rx, 1);
+	UARTPrintString(&huart5, "Tuning Task Initialized!\r\n");
+	mode = 0;
 	osKernelInitialize();
 
 	//SEMAPHORES & MUTEX CREATION
@@ -508,7 +500,6 @@ int main(void)
 	functionalHandle = osThreadNew(functionalTask, NULL, &functionalTaskAttributes);
 	IMUHandle = osThreadNew(IMUTask, NULL, &IMUTaskAttributes);
 	servoArmsHandle = osThreadNew(servoArmsTask, NULL, &servoArmsTaskAttributes);
-	tuningHandle = osThreadNew(tuningTask, NULL, &tuningTaskAttributes);
 
 	osKernelStart();
 
