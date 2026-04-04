@@ -98,6 +98,7 @@ uint8_t depositToggle = 0;
 uint8_t depositMode = 0;
 volatile int mot1pwm = 0; //top belt motor
 volatile int mot2pwm = 0; //bot belt motor
+int directionKFS = 1;
 
 //SERVO ARMS VARIABLES
 SERVO_t serv1;
@@ -307,7 +308,8 @@ void controlTask(void *argument) {
 		//TUNING MODE TOGGLE
 		if ((ps4.button & L3) && !tuningModeToggle) {
 			tuningModeToggle = 1;
-			tuningModeActive = !tuningModeActive; // Flips between 1 and 0
+			directionKFS = directionKFS * -1;
+//			tuningModeActive = !tuningModeActive; // Flips between 1 and 0
 		} else if (!(ps4.button & L3) && tuningModeToggle) {
 			tuningModeToggle = 0;
 		}
@@ -413,7 +415,7 @@ void functionalTask(void *arguement) {
 
 		if ((ps4.button & TRIANGLE) && !bothMotToggle) {
 			bothMotToggle = 1;
-			if (mot1pwm == 20000 || mot2pwm == 20000) {
+			if (mot1pwm == 20000 * directionKFS || mot2pwm == 20000 * directionKFS) {
 				topMotKilled = 1;
 				botMotKilled = 1;
 				mot1pwm = 0;
@@ -422,34 +424,34 @@ void functionalTask(void *arguement) {
 			else {
 				topMotKilled = 0;
 				botMotKilled = 0;
-				mot1pwm = 20000;
-				mot2pwm = 20000;
+				mot1pwm = 20000 * directionKFS;
+				mot2pwm = 20000 * directionKFS;
 			}
 		} else if (!(ps4.button & TRIANGLE) && bothMotToggle) bothMotToggle = 0;
 
 		//KFS TOP MOTOR
 		if ((ps4.button & UP) && !topMotToggle) {
 			topMotToggle = 1;
-			if (mot1pwm == 20000) {
+			if (mot1pwm == 20000 * directionKFS) {
 				topMotKilled = 1;
 				mot1pwm = 0;
 			}
 			else {
 				topMotKilled = 0;
-				mot1pwm = 20000;
+				mot1pwm = 20000 * directionKFS;
 			}
 		} else if (!(ps4.button & UP) && topMotToggle) topMotToggle = 0;
 
 		//KFS BOT MOTOR
 		if ((ps4.button & DOWN) && !botMotToggle) {
 			botMotToggle = 1;
-			if (mot2pwm == 20000) {
+			if (mot2pwm == 20000 * directionKFS) {
 				botMotKilled = 1;
 				mot2pwm = 0;
 			}
 			else {
 				botMotKilled = 0;
-				mot2pwm = 20000;
+				mot2pwm = 20000 * directionKFS;
 			}
 		} else if (!(ps4.button & DOWN) && botMotToggle) botMotToggle = 0;
 
